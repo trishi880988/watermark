@@ -1,2 +1,7 @@
 pyTelegramBotAPI
 moviepy
+imageio
+imageio-ffmpeg
+numpy
+decorator
+tqdm

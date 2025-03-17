@@ -1,15 +1,24 @@
-import telebot
 import os
+import telebot
 import moviepy.editor as mp
 import random
+import redis
+from celery import Celery
 
+# Heroku environment variables
 BOT_TOKEN = os.getenv('BOT_TOKEN')
-bot = telebot.TeleBot(BOT_TOKEN)
+REDIS_URL = os.getenv('REDIS_URL', 'redis://localhost:6379/0')
 
+# Initialize bot and Redis
+bot = telebot.TeleBot(BOT_TOKEN)
+r = redis.from_url(REDIS_URL)
+
+# Celery setup for background tasks
+celery = Celery('tasks', broker=REDIS_URL)
+
+# Temporary storage for videos
 if not os.path.exists("downloads"):
     os.makedirs("downloads")
-
-user_data = {}
 
 @bot.message_handler(commands=['start'])
 def start_handler(message):
@@ -25,20 +34,26 @@ def handle_video(message):
     with open(video_path, 'wb') as new_file:
         new_file.write(downloaded_file)
     
-    user_data[user_id] = {'video_path': video_path}
+    # Store video path in Redis
+    r.set(f'{user_id}_video_path', video_path)
     
     bot.reply_to(message, "✅ Video received! Now send me the watermark text 🖊️.")
 
-@bot.message_handler(func=lambda message: message.chat.id in user_data and 'video_path' in user_data[message.chat.id])
+@bot.message_handler(func=lambda message: r.exists(f'{message.chat.id}_video_path'))
 def handle_watermark(message):
     user_id = message.chat.id
     watermark_text = message.text
-    video_path = user_data[user_id]['video_path']
+    video_path = r.get(f'{user_id}_video_path').decode('utf-8')
     
+    # Start background task
+    process_video.delay(user_id, video_path, watermark_text)
+    bot.reply_to(message, "🌀 Processing your video, please wait...")
+
+# Celery task for video processing
+@celery.task
+def process_video(user_id, video_path, watermark_text):
     output_path = f'downloads/{user_id}_watermarked.mp4'
     
-    bot.send_message(user_id, "🌀 Processing your video, please wait...")
-
     # Apply watermark dynamically
     clip = mp.VideoFileClip(video_path)
     txt_clip = (mp.TextClip(watermark_text, fontsize=40, color='white', font="Arial-Bold")
@@ -49,14 +64,14 @@ def handle_watermark(message):
     final = mp.CompositeVideoClip([clip, txt_clip])
     final.write_videofile(output_path, codec='libx264', audio_codec='aac')
 
+    # Send the processed video back to the user
     with open(output_path, 'rb') as vid:
         bot.send_video(user_id, vid, caption="✅ Here's your watermarked video!")
 
     # Cleanup
     os.remove(video_path)
     os.remove(output_path)
-    user_data.pop(user_id)
+    r.delete(f'{user_id}_video_path')
 
+# Start the bot
 bot.infinity_polling()
-
-

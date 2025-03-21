@@ -1,47 +1,61 @@
 import os
 from pyrogram import Client, filters
-from pyrogram.types import Message
-import subprocess
-import asyncio
+import ffmpeg
+from PIL import Image, ImageDraw, ImageFont
 
-API_ID = int(os.environ.get("API_ID"))
-API_HASH = os.environ.get("API_HASH")
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
+# ---------- CONFIG ----------
+API_ID = 123456    # <-- Yaha apna API ID daalo
+API_HASH = "your_api_hash"   # <-- Yaha apna API HASH daalo
+BOT_TOKEN = "your_bot_token"  # <-- Yaha apna BOT TOKEN daalo
+FONT_PATH = "Poppins-Bold.ttf"  # Font file ko isi naam se same folder me rakho
+WATERMARK_TEXT = "Join-@skillwithgaurav"
 
-app = Client("watermark_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+bot = Client("thumb_watermark_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-# Ensure fonts directory exists
-os.makedirs("fonts", exist_ok=True)
 
-@app.on_message(filters.video & filters.private)
-async def watermark_video(client, message: Message):
-    if message.video.file_size > 314572800:  # 300MB = 300*1024*1024 bytes
-        await message.reply_text("❌ Bhai 300MB se chhota video bhejna padega! 🚫")
-        return
+@bot.on_message(filters.video & filters.private)
+async def process_video(client, message):
+    await message.reply("✅ Video Received! Processing thumbnail...")
 
-    await message.reply_text("✅ Video mila! Watermark lagaya ja raha hai... ⏳")
-
+    # Download the video
     video_path = await message.download()
-    output_path = "watermarked.mp4"
-    
-    watermark_text = "Join-@skillwithgaurav"
+    thumb_raw = "thumb_raw.jpg"
+    thumb_watermarked = "thumb_done.jpg"
 
-    command = [
-        "ffmpeg", "-i", video_path,
-        "-vf",
-        f"drawtext=fontfile=fonts/Poppins-Bold.ttf:text='{watermark_text}':fontcolor=white:fontsize=24:box=1:boxcolor=black@0.5:boxborderw=5:x=w/2+50*sin(2*PI*t/5):y=h/2+50*cos(2*PI*t/5):rotate=PI/4*t",
-        "-preset", "ultrafast",
-        "-threads", "1",
-        "-c:a", "copy",
-        output_path
-    ]
+    # Extract thumbnail using ffmpeg
+    os.system(f"ffmpeg -i '{video_path}' -ss 00:00:01.000 -vframes 1 {thumb_raw}")
 
-    process = await asyncio.create_subprocess_exec(*command)
-    await process.communicate()
+    # Open thumbnail image
+    im = Image.open(thumb_raw).convert("RGB")
+    draw = ImageDraw.Draw(im)
+    W, H = im.size
 
-    await message.reply_video(video=output_path, caption="✅ Watermark lag gaya bhai! 🎉")
+    # Load font and calculate position
+    font_size = int(H * 0.06)
+    font = ImageFont.truetype(FONT_PATH, font_size)
+    text = WATERMARK_TEXT
+    text_width, text_height = draw.textsize(text, font=font)
 
+    x = (W - text_width) / 2  # center horizontally
+    y = H - text_height - 80  # bottom se thoda upar
+
+    # Apply shadow
+    draw.text((x+2, y+2), text, font=font, fill="black")
+    # Apply main text
+    draw.text((x, y), text, font=font, fill="white")
+
+    im.save(thumb_watermarked)
+
+    await message.reply("✅ Watermark added! Sending video back...")
+
+    # Send back video with watermarked thumbnail
+    await message.reply_video(video=video_path, thumb=thumb_watermarked, caption="✅ Watermark done!")
+
+    # Clean up
     os.remove(video_path)
-    os.remove(output_path)
+    os.remove(thumb_raw)
+    os.remove(thumb_watermarked)
 
-app.run()
+
+print("🤖 Bot is running...")
+bot.run()

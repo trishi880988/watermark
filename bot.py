@@ -1,52 +1,76 @@
 import os
-from pyrogram import Client, filters
-import ffmpeg
+import cv2
+from telegram import Update
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes, ConversationHandler
 from PIL import Image, ImageDraw, ImageFont
 
-API_ID = 20219694
-API_HASH = "29d9b3a01721ab452fcae79346769e29"
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
+# States
+VIDEO, WATERMARK_TEXT = range(2)
 
-FONT_PATH = "Poppins-Bold.ttf"
-WATERMARK_TEXT = "Join-@skillwithgaurav"
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("🎥 Send me a video to extract thumbnail & add watermark.")
+    return VIDEO
 
-bot = Client("bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+async def get_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    video = update.message.video
+    file = await video.get_file()
+    await file.download_to_drive("input_video.mp4")
+    await update.message.reply_text("✅ Video received! Now, send watermark text:")
+    return WATERMARK_TEXT
 
+async def get_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+    context.user_data['watermark_text'] = text
+    await update.message.reply_text("🟢 Processing thumbnail...")
 
-@bot.on_message(filters.video & filters.private)
-async def process_video(client, message):
-    await message.reply("✅ Video Received! Processing thumbnail...")
+    # Extract thumbnail using OpenCV
+    cap = cv2.VideoCapture("input_video.mp4")
+    ret, frame = cap.read()
+    if ret:
+        cv2.imwrite("thumbnail.jpg", frame)
+    cap.release()
 
-    video_path = await message.download()
-    thumb_raw = "thumb_raw.jpg"
-    thumb_watermarked = "thumb_done.jpg"
-
-    os.system(f"ffmpeg -i '{video_path}' -ss 00:00:01.000 -vframes 1 {thumb_raw}")
-
-    im = Image.open(thumb_raw).convert("RGB")
-    draw = ImageDraw.Draw(im)
-    W, H = im.size
-
-    font_size = int(H * 0.06)
-    font = ImageFont.truetype(FONT_PATH, font_size)
-    text = WATERMARK_TEXT
+    # Apply watermark on thumbnail
+    img = Image.open("thumbnail.jpg").convert("RGBA")
+    txt = Image.new('RGBA', img.size, (255,255,255,0))
+    draw = ImageDraw.Draw(txt)
+    font = ImageFont.truetype("arial.ttf", 40)
     text_width, text_height = draw.textsize(text, font=font)
+    position = (img.size[0] - text_width - 20, img.size[1] - text_height - 20)
+    draw.text(position, text, font=font, fill=(255,0,0,180))
+    watermarked = Image.alpha_composite(img, txt)
+    watermarked = watermarked.convert("RGB")
+    watermarked.save("final_thumbnail.jpg")
 
-    x = (W - text_width) / 2
-    y = H - text_height - 80
+    await update.message.reply_photo(photo=open("final_thumbnail.jpg", "rb"), caption="✅ Thumbnail watermarked successfully!")
 
-    draw.text((x+2, y+2), text, font=font, fill="black")
-    draw.text((x, y), text, font=font, fill="white")
+    # Cleanup
+    os.remove("input_video.mp4")
+    os.remove("thumbnail.jpg")
+    os.remove("final_thumbnail.jpg")
+    return ConversationHandler.END
 
-    im.save(thumb_watermarked)
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("❌ Cancelled!")
+    return ConversationHandler.END
 
-    await message.reply("✅ Watermark added! Sending video back...")
-    await message.reply_video(video=video_path, thumb=thumb_watermarked, caption="✅ Watermark done!")
+async def main():
+    TOKEN = os.getenv("BOT_TOKEN")
+    app = ApplicationBuilder().token(TOKEN).build()
 
-    os.remove(video_path)
-    os.remove(thumb_raw)
-    os.remove(thumb_watermarked)
+    conv_handler = ConversationHandler(
+        entry_points=[CommandHandler("start", start)],
+        states={
+            VIDEO: [MessageHandler(filters.VIDEO, get_video)],
+            WATERMARK_TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_text)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+    )
 
+    app.add_handler(conv_handler)
+    print("✅ Bot is running!")
+    await app.run_polling()
 
-print("🤖 Bot is running...")
-bot.run()
+if __name__ == '__main__':
+    import asyncio
+    asyncio.run(main())
